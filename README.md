@@ -118,171 +118,133 @@ Use Delphi's built-in JWT testing module to verify your token generation:
     ```javascript
     class DelphiEmbed {
       constructor(iframeId, token) {
-        console.log(
-          `[DelphiEmbed] Constructor called with iframeId: ${iframeId}`
-        );
-        this.iframe = document.getElementById(iframeId);
-        console.log(`[DelphiEmbed] Iframe found:`, !!this.iframe);
+        console.log(`[DelphiEmbed] Initializing for "${iframeId}"`);
+        this.iframeId = iframeId;
         this.token = token;
         this.maxRetries = 5;
         this.retryDelay = 500;
         this.loadTimeout = 10000;
+        this.iframeRetries = 10;
+        this.iframeRetryDelay = 200;
+      }
+
+      async findIframe() {
+        let attempts = 0;
+
+        while (attempts < this.iframeRetries) {
+          const iframe = document.getElementById(this.iframeId);
+          if (iframe) return iframe;
+          await new Promise((resolve) =>
+            setTimeout(resolve, this.iframeRetryDelay)
+          );
+          attempts++;
+        }
+
+        throw new Error(
+          `Iframe "${this.iframeId}" not found after ${this.iframeRetries} attempts`
+        );
       }
 
       async initialize() {
-        console.log("[DelphiEmbed] Initialize called");
-        if (!this.iframe) {
-          console.error("[DelphiEmbed] Iframe not found");
-          throw new Error("Iframe not found");
+        try {
+          this.iframe = await this.findIframe();
+          console.log("[DelphiEmbed] Found iframe, starting initialization");
+        } catch (error) {
+          console.error("[DelphiEmbed]", error);
+          throw error;
         }
 
         return new Promise((resolve, reject) => {
-          console.log("[DelphiEmbed] Starting initialization promise");
           let retryCount = 0;
 
           const validateLocation = () => {
-            console.log("[DelphiEmbed] Validating location");
             try {
               const win = this.iframe.contentWindow;
-
-              const isValid =
+              return (
                 win?.location?.href !== "about:blank" &&
                 win?.location?.protocol !== "about:" &&
-                win?.location?.origin !== "null";
-
-              console.log("[DelphiEmbed] Location validation result:", isValid);
-              return isValid;
+                win?.location?.origin !== "null"
+              );
             } catch (e) {
-              console.log("[DelphiEmbed] Error accessing iframe location:", e);
               return false;
             }
           };
 
           const validateContent = () => {
-            console.log("[DelphiEmbed] Validating content");
             try {
               const win = this.iframe.contentWindow;
-              if (!win || !win.document) {
-                console.log("[DelphiEmbed] No window or document yet");
-                return false;
-              }
+              if (!win?.document) return false;
 
-              const mainContent = win.document.querySelector(
-                ".delphi-talk-main-content"
+              return !!(
+                win.document.querySelector(".delphi-talk-main-content") ||
+                win.document.querySelector(".delphi-call-content")
               );
-              const callContent = win.document.querySelector(
-                ".delphi-call-content"
-              );
-
-              if (mainContent) {
-                console.log(
-                  "[DelphiEmbed] Found valid content element: delphi-talk-main-content"
-                );
-              }
-              if (callContent) {
-                console.log(
-                  "[DelphiEmbed] Found valid content element: delphi-call-content"
-                );
-              }
-
-              return !!(mainContent || callContent);
             } catch (e) {
-              console.log("[DelphiEmbed] Error accessing iframe content:", e);
               return false;
             }
           };
 
           const checkContent = () => {
-            console.log(
-              "[DelphiEmbed] Checking content, attempt:",
-              retryCount + 1
-            );
             if (validateContent()) {
-              console.log("[DelphiEmbed] Content validation successful");
               clearTimeout(loadTimeout);
-
-              console.log("[DelphiEmbed] Sending SSO token");
               this.iframe.contentWindow.postMessage(
-                {
-                  type: "sso_login",
-                  token: this.token,
-                },
+                { type: "sso_login", token: this.token },
                 "*"
               );
-
+              console.log("[DelphiEmbed] SSO token sent successfully");
               resolve();
               return true;
             }
-            console.log("[DelphiEmbed] Content check failed");
             return false;
           };
 
           const retryCheck = () => {
             if (retryCount >= this.maxRetries) {
-              console.error(
-                "[DelphiEmbed] Max retries reached:",
-                this.maxRetries
-              );
               clearTimeout(loadTimeout);
-              reject(new Error("Failed to load iframe after maximum retries"));
+              reject(
+                new Error("Failed to load iframe content after maximum retries")
+              );
               return;
             }
 
             retryCount++;
-            console.log(
-              `[DelphiEmbed] Scheduling retry ${retryCount}/${this.maxRetries} in ${this.retryDelay}ms`
-            );
             setTimeout(() => {
               if (validateLocation()) {
-                if (!checkContent()) {
-                  retryCheck();
-                }
+                if (!checkContent()) retryCheck();
               } else {
                 retryCheck();
               }
             }, this.retryDelay);
           };
 
-          // Set overall timeout
           const loadTimeout = setTimeout(() => {
-            console.error(
-              "[DelphiEmbed] Load timeout reached after",
-              this.loadTimeout,
-              "ms"
-            );
             reject(new Error("Iframe load timeout"));
           }, this.loadTimeout);
 
-          // Start checking the iframe
-          console.log("[DelphiEmbed] Starting initial check");
           if (validateLocation()) {
-            if (!checkContent()) {
-              retryCheck();
-            }
+            if (!checkContent()) retryCheck();
           } else {
             retryCheck();
           }
 
-          // Add load event listener as backup
           this.iframe.addEventListener("load", () => {
-            console.log("[DelphiEmbed] Iframe load event fired");
-            if (validateLocation()) {
-              checkContent();
-            }
+            if (validateLocation()) checkContent();
           });
         });
       }
     }
-
-    // Usage
-    console.log("[DelphiEmbed] Creating new instance");
-    const delphi = new DelphiEmbed("delphi-frame", "your_jwt_token");
-    delphi
-      .initialize()
-      .then(() => console.log("[DelphiEmbed] Initialized successfully"))
-      .catch((error) =>
-        console.error("[DelphiEmbed] Initialization failed:", error)
-      );
     ```
+
+```javascript
+// Usage
+console.log("[DelphiEmbed] Creating new instance");
+const delphi = new DelphiEmbed("delphi-frame", "your_jwt_token");
+delphi
+  .initialize()
+  .then(() => console.log("[DelphiEmbed] Initialized successfully"))
+  .catch((error) =>
+    console.error("[DelphiEmbed] Initialization failed:", error)
+  );
+```
 
 By following these guidelines and best practices, you'll ensure a secure and efficient SSO implementation.
