@@ -177,7 +177,8 @@ Use Delphi's built-in JWT testing module to verify your token generation:
 
               return !!(
                 win.document.querySelector(".delphi-talk-main-content") ||
-                win.document.querySelector(".delphi-call-content")
+                win.document.querySelector(".delphi-call-content") ||
+                win.document.querySelector(".delphi-profile-container")
               );
             } catch (e) {
               return false;
