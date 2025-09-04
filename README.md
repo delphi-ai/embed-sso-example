@@ -64,7 +64,7 @@ iframe.contentWindow.postMessage(
     type: 'sso_login',
     token: 'your_generated_jwt_here'
   },
-  targetOrigin // Never use '*' in production
+  targetOrigin
 );
 ```
 
@@ -125,7 +125,7 @@ Use Delphi's built-in JWT testing module to verify your token generation:
         this.token = token;
         this.maxRetries = options.maxRetries || 5;
         this.retryDelay = options.retryDelay || 500; // ms
-        this.loadDelay = options.loadDelay || 100;   // ms
+        this.loadDelay = options.loadDelay || 100;
         this.defaultOrigin = 'https://www.delphi.ai'; // set to your Delphi domain
         this.iframe = null;
         this.targetOrigin = null;
@@ -163,10 +163,7 @@ Use Delphi's built-in JWT testing module to verify your token generation:
       sendToken() {
         if (!this.iframe || !this.targetOrigin) return;
         try {
-          this.iframe.contentWindow.postMessage(
-            { type: 'sso_login', token: this.token },
-            this.targetOrigin
-          );
+          this.iframe.contentWindow.postMessage({ type: 'sso_login', token: this.token }, this.targetOrigin);
           console.log('[DelphiSSO] Token sent to', this.targetOrigin);
         } catch (err) {
           console.error('[DelphiSSO] postMessage failed:', err);
@@ -177,7 +174,6 @@ Use Delphi's built-in JWT testing module to verify your token generation:
         this.iframe = await this.findIframe();
         this.targetOrigin = this.determineTargetOrigin();
 
-        // Send when iframe fires load (with a tiny delay)
         this.iframe.addEventListener('load', () => {
           setTimeout(() => this.sendToken(), this.loadDelay);
         });
@@ -188,7 +184,6 @@ Use Delphi's built-in JWT testing module to verify your token generation:
           setTimeout(() => this.sendToken(), this.loadDelay);
         }
 
-        // Retry a few times irrespective of load to cover race conditions
         let attempts = 0;
         const interval = setInterval(() => {
           this.sendToken();
@@ -200,18 +195,15 @@ Use Delphi's built-in JWT testing module to verify your token generation:
     ```
 
     ```javascript
-    // Usage
     const delphiSSO = new DelphiSSOSender('delphi-frame', 'your_jwt_token');
     delphiSSO.initialize().catch((e) => console.error('[DelphiSSO] Init failed:', e));
     ```
 
     Note:
-    - Do not read `iframe.contentWindow.location` or `iframe.contentWindow.document` on cross‑origin iframes; browsers block this by design (SOP).
-    - Always use a specific `targetOrigin` (e.g., `https://www.delphi.ai` or your custom domain), not `*` in production.
-    - For deeper context, see `delphi-frontend/docs/sso-iframe-sop-troubleshooting.md`.
 
-4.  **Same-Origin Policy Compliance:** Never attempt to read `iframe.contentWindow.location` or `iframe.contentWindow.document` from a cross-origin Delphi embed, as browsers will block these operations for security reasons. Always use `postMessage` with a specific `targetOrigin` for cross-origin communication.
+    - Do not read `iframe.contentWindow.location` or `iframe.contentWindow.document` on cross‑origin iframes; browsers block this by design due to Same-Origin Policy.
+    - Always use a specific `targetOrigin` (e.g., `https://www.delphi.ai` or your custom domain), not a wildcard (`*`) in production.
 
-    For detailed troubleshooting on SOP-related issues, see: [`delphi-frontend/docs/sso-iframe-sop-troubleshooting.md`](../delphi-frontend/docs/sso-iframe-sop-troubleshooting.md)
+4.  **Same-Origin Policy Compliance:** Never attempt to read `iframe.contentWindow.location` or `iframe.contentWindow.document` from a cross-origin Delphi embed, as browsers will block these operations for security reasons. Use `postMessage` with a specific `targetOrigin` for cross-origin communication.
 
 By following these guidelines and best practices, you'll ensure a secure and efficient SSO implementation.
