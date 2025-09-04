@@ -101,7 +101,7 @@ Use Delphi's built-in JWT testing module to verify your token generation:
           type: 'sso_login',
           token: 'your_jwt_token'
         },
-        '*'
+        '*' // Never use wildcard in production
       );
     }
 
