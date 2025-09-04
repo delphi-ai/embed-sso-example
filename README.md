@@ -56,12 +56,15 @@ supported algorithim is RS256.
 To authenticate the Delphi embedding in your app, you can run the following, providing the JWT you generated earlier:
 
 ```javascript
-document.getElementById("delphi-frame").contentWindow.postMessage(
+const iframe = document.getElementById('delphi-frame');
+const targetOrigin = 'https://www.delphi.ai'; // Use your Delphi instance origin
+
+iframe.contentWindow.postMessage(
   {
-    type: "sso_login",
-    token: "your_generated_jwt_here",
+    type: 'sso_login',
+    token: 'your_generated_jwt_here'
   },
-  "*"
+  targetOrigin // Never use '*' in production
 );
 ```
 
@@ -90,15 +93,15 @@ Use Delphi's built-in JWT testing module to verify your token generation:
     ```javascript
     // ❌ Problematic Implementation
     function initializeDelphiEmbed() {
-      const iframe = document.getElementById("delphi-frame");
+      const iframe = document.getElementById('delphi-frame');
 
       // This might fail if the scripts inside the iframe haven't loaded yet
       iframe.contentWindow.postMessage(
         {
-          type: "sso_login",
-          token: "your_jwt_token",
+          type: 'sso_login',
+          token: 'your_jwt_token'
         },
-        "*"
+        '*'
       );
     }
 
@@ -113,139 +116,102 @@ Use Delphi's built-in JWT testing module to verify your token generation:
     - There's no retry mechanism if the initialization fails
 
     **Recommended Implementation**
-    Instead, implement a more robust initialization with proper loading checks and retries. Here is some sample code to inspire your implementation.
+    Use a SOP-safe sender that never inspects the cross‑origin iframe. It sends `{ type: 'sso_login', token }` on load with a short delay, retries a few times, and always uses a strict `targetOrigin`.
 
     ```javascript
-    class DelphiEmbed {
-      constructor(iframeId, token) {
-        console.log(`[DelphiEmbed] Initializing for "${iframeId}"`);
+    class DelphiSSOSender {
+      constructor(iframeId, token, options = {}) {
         this.iframeId = iframeId;
         this.token = token;
-        this.maxRetries = 5;
-        this.retryDelay = 500;
-        this.loadTimeout = 10000;
-        this.iframeRetries = 10;
-        this.iframeRetryDelay = 200;
+        this.maxRetries = options.maxRetries || 5;
+        this.retryDelay = options.retryDelay || 500; // ms
+        this.loadDelay = options.loadDelay || 100;   // ms
+        this.defaultOrigin = 'https://www.delphi.ai'; // set to your Delphi domain
+        this.iframe = null;
+        this.targetOrigin = null;
       }
 
       async findIframe() {
-        let attempts = 0;
+        return new Promise((resolve, reject) => {
+          let attempts = 0;
+          const maxAttempts = 20;
 
-        while (attempts < this.iframeRetries) {
-          const iframe = document.getElementById(this.iframeId);
-          if (iframe) return iframe;
-          await new Promise((resolve) =>
-            setTimeout(resolve, this.iframeRetryDelay)
-          );
-          attempts++;
+          const tick = () => {
+            const iframe = document.getElementById(this.iframeId);
+            if (iframe) return resolve(iframe);
+            attempts++;
+            if (attempts >= maxAttempts) return reject(new Error(`Iframe "${this.iframeId}" not found`));
+            setTimeout(tick, 100);
+          };
+
+          tick();
+        });
+      }
+
+      determineTargetOrigin() {
+        if (this.iframe && this.iframe.src) {
+          try {
+            const url = new URL(this.iframe.src);
+            return `${url.protocol}//${url.host}`;
+          } catch (_) {
+            console.warn('[DelphiSSO] Could not parse iframe src; falling back to default origin');
+          }
         }
+        return this.defaultOrigin;
+      }
 
-        throw new Error(
-          `Iframe "${this.iframeId}" not found after ${this.iframeRetries} attempts`
-        );
+      sendToken() {
+        if (!this.iframe || !this.targetOrigin) return;
+        try {
+          this.iframe.contentWindow.postMessage(
+            { type: 'sso_login', token: this.token },
+            this.targetOrigin
+          );
+          console.log('[DelphiSSO] Token sent to', this.targetOrigin);
+        } catch (err) {
+          console.error('[DelphiSSO] postMessage failed:', err);
+        }
       }
 
       async initialize() {
-        try {
-          this.iframe = await this.findIframe();
-          console.log("[DelphiEmbed] Found iframe, starting initialization");
-        } catch (error) {
-          console.error("[DelphiEmbed]", error);
-          throw error;
+        this.iframe = await this.findIframe();
+        this.targetOrigin = this.determineTargetOrigin();
+
+        // Send when iframe fires load (with a tiny delay)
+        this.iframe.addEventListener('load', () => {
+          setTimeout(() => this.sendToken(), this.loadDelay);
+        });
+
+        // If it's already loaded, send once after a short delay
+        const doc = this.iframe.contentDocument;
+        if (doc && doc.readyState === 'complete') {
+          setTimeout(() => this.sendToken(), this.loadDelay);
         }
 
-        return new Promise((resolve, reject) => {
-          let retryCount = 0;
-
-          const validateLocation = () => {
-            try {
-              const win = this.iframe.contentWindow;
-              return (
-                win?.location?.href !== "about:blank" &&
-                win?.location?.protocol !== "about:" &&
-                win?.location?.origin !== "null"
-              );
-            } catch (e) {
-              return false;
-            }
-          };
-
-          const validateContent = () => {
-            try {
-              const win = this.iframe.contentWindow;
-              if (!win?.document) return false;
-
-              return !!(
-                win.document.querySelector(".delphi-talk-main-content") ||
-                win.document.querySelector(".delphi-call-content") ||
-                win.document.querySelector(".delphi-profile-container")
-              );
-            } catch (e) {
-              return false;
-            }
-          };
-
-          const checkContent = () => {
-            if (validateContent()) {
-              clearTimeout(loadTimeout);
-              this.iframe.contentWindow.postMessage(
-                { type: "sso_login", token: this.token },
-                "*"
-              );
-              console.log("[DelphiEmbed] SSO token sent successfully");
-              resolve();
-              return true;
-            }
-            return false;
-          };
-
-          const retryCheck = () => {
-            if (retryCount >= this.maxRetries) {
-              clearTimeout(loadTimeout);
-              reject(
-                new Error("Failed to load iframe content after maximum retries")
-              );
-              return;
-            }
-
-            retryCount++;
-            setTimeout(() => {
-              if (validateLocation()) {
-                if (!checkContent()) retryCheck();
-              } else {
-                retryCheck();
-              }
-            }, this.retryDelay);
-          };
-
-          const loadTimeout = setTimeout(() => {
-            reject(new Error("Iframe load timeout"));
-          }, this.loadTimeout);
-
-          if (validateLocation()) {
-            if (!checkContent()) retryCheck();
-          } else {
-            retryCheck();
-          }
-
-          this.iframe.addEventListener("load", () => {
-            if (validateLocation()) checkContent();
-          });
-        });
+        // Retry a few times irrespective of load to cover race conditions
+        let attempts = 0;
+        const interval = setInterval(() => {
+          this.sendToken();
+          attempts++;
+          if (attempts >= this.maxRetries) clearInterval(interval);
+        }, this.retryDelay);
       }
     }
     ```
 
-```javascript
-// Usage
-console.log("[DelphiEmbed] Creating new instance");
-const delphi = new DelphiEmbed("delphi-frame", "your_jwt_token");
-delphi
-  .initialize()
-  .then(() => console.log("[DelphiEmbed] Initialized successfully"))
-  .catch((error) =>
-    console.error("[DelphiEmbed] Initialization failed:", error)
-  );
-```
+    ```javascript
+    // Usage
+    const delphiSSO = new DelphiSSOSender('delphi-frame', 'your_jwt_token');
+    delphiSSO.initialize().catch((e) => console.error('[DelphiSSO] Init failed:', e));
+    ```
+
+    Note:
+    - Do not read `iframe.contentWindow.location` or `iframe.contentWindow.document` on cross‑origin iframes; browsers block this by design (SOP).
+    - Always use a specific `targetOrigin` (e.g., `https://www.delphi.ai` or your custom domain), not `*` in production.
+    - For deeper context, see `delphi-frontend/docs/sso-iframe-sop-troubleshooting.md`.
+
+4.  **Same-Origin Policy Compliance:** Never attempt to read `iframe.contentWindow.location` or `iframe.contentWindow.document` from a cross-origin Delphi embed, as browsers will block these operations for security reasons. Always use `postMessage` with a specific `targetOrigin` for cross-origin communication.
+
+    For detailed troubleshooting on SOP-related issues, see: [`delphi-frontend/docs/sso-iframe-sop-troubleshooting.md`](../delphi-frontend/docs/sso-iframe-sop-troubleshooting.md)
 
 By following these guidelines and best practices, you'll ensure a secure and efficient SSO implementation.
