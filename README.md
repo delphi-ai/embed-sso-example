@@ -57,7 +57,7 @@ To authenticate the Delphi embedding in your app, you can run the following, pro
 
 ```javascript
 const iframe = document.getElementById('delphi-frame');
-const targetOrigin = 'https://www.delphi.ai'; // Use your Delphi instance origin
+const targetOrigin = 'https://embed.delphi.ai'; // Use the embed origin, not the API origin
 
 iframe.contentWindow.postMessage(
   {
@@ -115,8 +115,20 @@ Use Delphi's built-in JWT testing module to verify your token generation:
     - The Delphi application inside the iframe might not be ready to receive messages
     - There's no retry mechanism if the initialization fails
 
+    **Understanding Delphi's Nested Iframe Structure**
+
+    Delphi's embed loader creates a nested iframe structure:
+
+    ```
+    Your Page
+    └── Outer Wrapper Iframe (your 'delphi-frame')
+        └── Inner App Iframe (contains the actual Delphi app)
+    ```
+
+    - The SSO listener lives in the **inner iframe** (at `https://embed.delphi.ai`), not the outer wrapper. If you send the SSO message to the wrong iframe or wrong origin, the browser will silently drop it, causing authentication to fail.
+
     **Recommended Implementation**
-    Use a SOP-safe sender that never inspects the cross‑origin iframe. It sends `{ type: 'sso_login', token }` on load with a short delay, retries a few times, and always uses a strict `targetOrigin`.
+    Use a robust sender that handles the nested iframe structure correctly:
 
     ```javascript
     class DelphiSSOSender {
@@ -124,71 +136,59 @@ Use Delphi's built-in JWT testing module to verify your token generation:
         this.iframeId = iframeId;
         this.token = token;
         this.maxRetries = options.maxRetries || 5;
-        this.retryDelay = options.retryDelay || 500; // ms
+        this.retryDelay = options.retryDelay || 500;
         this.loadDelay = options.loadDelay || 100;
-        this.defaultOrigin = 'https://www.delphi.ai'; // set to your Delphi domain
         this.iframe = null;
-        this.targetOrigin = null;
+        this.attempts = 0;
       }
 
-      async findIframe() {
+      async findTargetIframe() {
         return new Promise((resolve, reject) => {
-          let attempts = 0;
-          const maxAttempts = 20;
+          let tries = 0;
+          const maxTries = 20;
 
-          const tick = () => {
-            const iframe = document.getElementById(this.iframeId);
-            if (iframe) return resolve(iframe);
-            attempts++;
-            if (attempts >= maxAttempts) return reject(new Error(`Iframe "${this.iframeId}" not found`));
-            setTimeout(tick, 100);
+          const check = () => {
+            const container = document.getElementById(this.iframeId);
+            const frames = container?.querySelectorAll('iframe') || [];
+
+            const embedFrame = Array.from(frames).find((f) => f.src && f.src.includes('embed.delphi.ai')) || frames[frames.length - 1];
+
+            if (embedFrame) return resolve(embedFrame);
+
+            if (++tries >= maxTries) {
+              return reject(new Error(`Embed iframe not found in #${this.iframeId}`));
+            }
+            setTimeout(check, 100);
           };
-
-          tick();
+          check();
         });
       }
 
-      determineTargetOrigin() {
-        if (this.iframe && this.iframe.src) {
-          try {
-            const url = new URL(this.iframe.src);
-            return `${url.protocol}//${url.host}`;
-          } catch (_) {
-            console.warn('[DelphiSSO] Could not parse iframe src; falling back to default origin');
-          }
-        }
-        return this.defaultOrigin;
-      }
-
       sendToken() {
-        if (!this.iframe || !this.targetOrigin) return;
-        try {
-          this.iframe.contentWindow.postMessage({ type: 'sso_login', token: this.token }, this.targetOrigin);
-          console.log('[DelphiSSO] Token sent to', this.targetOrigin);
-        } catch (err) {
-          console.error('[DelphiSSO] postMessage failed:', err);
-        }
+        if (!this.iframe) return;
+
+        const targetOrigin = this.attempts < 2 ? '*' : 'https://embed.delphi.ai';
+
+        this.iframe.contentWindow?.postMessage({ type: 'sso_login', token: this.token }, targetOrigin);
+
+        console.log(`[DelphiSSO] Token sent (attempt ${this.attempts + 1}) to:`, targetOrigin);
       }
 
       async initialize() {
-        this.iframe = await this.findIframe();
-        this.targetOrigin = this.determineTargetOrigin();
+        this.iframe = await this.findTargetIframe();
 
         this.iframe.addEventListener('load', () => {
           setTimeout(() => this.sendToken(), this.loadDelay);
         });
 
-        // If it's already loaded, send once after a short delay
         const doc = this.iframe.contentDocument;
-        if (doc && doc.readyState === 'complete') {
+        if (doc?.readyState === 'complete') {
           setTimeout(() => this.sendToken(), this.loadDelay);
         }
 
-        let attempts = 0;
         const interval = setInterval(() => {
           this.sendToken();
-          attempts++;
-          if (attempts >= this.maxRetries) clearInterval(interval);
+          if (++this.attempts >= this.maxRetries) clearInterval(interval);
         }, this.retryDelay);
       }
     }
@@ -199,10 +199,11 @@ Use Delphi's built-in JWT testing module to verify your token generation:
     delphiSSO.initialize().catch((e) => console.error('[DelphiSSO] Init failed:', e));
     ```
 
-    Note:
+    Notes:
 
-    - Do not read `iframe.contentWindow.location` or `iframe.contentWindow.document` on cross‑origin iframes; browsers block this by design due to Same-Origin Policy.
-    - Always use a specific `targetOrigin` (e.g., `https://www.delphi.ai` or your custom domain), not a wildcard (`*`) in production.
+    - **Nested Iframe Detection:** The SSO message must reach the inner embed iframe at `https://embed.delphi.ai`, not just any iframe on your page. Always derive the `targetOrigin` from the iframe's `src` attribute, not from the API host.
+    - **Cross-Origin Limitations:** Do not read `iframe.contentWindow.location` or `iframe.contentWindow.document` on cross‑origin iframes; browsers block this by design due to Same-Origin Policy.
+    - **Specific Origins Only:** Always use a specific `targetOrigin` (e.g., `https://embed.delphi.ai`), never a wildcard (`*`) in production.
 
 4.  **Same-Origin Policy Compliance:** Never attempt to read `iframe.contentWindow.location` or `iframe.contentWindow.document` from a cross-origin Delphi embed, as browsers will block these operations for security reasons. Use `postMessage` with a specific `targetOrigin` for cross-origin communication.
 
