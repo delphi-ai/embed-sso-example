@@ -7,17 +7,18 @@ export default function LoginButton() {
     try {
       // Attempt to login and retrieve an SSO token
       const token = await loginJohnDoe();
-      
+
       // Find the Delphi iframe in the DOM
       const delphiFrame = document.getElementById('delphi-frame') as HTMLIFrameElement | null;
-      
+
       if (delphiFrame && delphiFrame.contentWindow) {
         // Send the SSO token to the Delphi iframe
         delphiFrame.contentWindow.postMessage({
           type: 'sso_login',
           token: token
-        }, '*');
-        // NOTE: In production, replace '*' with the specific origin of your Delphi instance
+        }, 'https://embed.delphi.ai');
+
+        console.log('SSO token sent to Delphi embed');
       } else {
         console.error('Delphi frame not found');
       }
