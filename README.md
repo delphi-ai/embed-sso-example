@@ -1,210 +1,211 @@
-# Delphi SSO Guide
+# Delphi Embed SSO
 
-## Introduction
+Embed SSO signs visitors into your Delphi embed as people your site, community,
+or newsletter already knows. Their conversations follow them across devices, and
+you see who they are in your inbox.
 
-Single Sign-On (SSO) is an authentication method that allows users to access multiple applications with one set of credentials. Delphi's custom SSO implementation lets you streamlines user access to our website embed. This guide will walk you through setting up and using SSO with Delphi.
+Each embed has its own SSO configuration. In Delphi, open **Integrations**, pick
+the embed, and go to the **Identity** tab. If you don't see that tab, contact
+[support@delphi.ai](mailto:support@delphi.ai) to enable SSO for your account.
 
-**Important:** The security of your SSO implementation relies heavily on keeping your private key confidential. Never share your private key or store it in unsecured locations.
+There are three ways to sign visitors in:
 
-## Getting Started
+| Mode                                     | Use it when                                  | Code on your page                                  |
+| ---------------------------------------- | -------------------------------------------- | -------------------------------------------------- |
+| [Custom JWT](#custom-jwt)                | Visitors sign in to your own site            | Your server signs a token; your page hands it over |
+| [Mighty Networks](#mighty-networks)      | The embed lives on a Mighty Networks space   | None                                               |
+| [Substack](#substack)                    | Your audience is your Substack subscribers   | None                                               |
 
-_This guide assumes you've already requested and been approved for SSO functionality. Contact [support@delphi.ai](mailto:support@delphi.ai) to begin the process._
+In the API these are the `jwt_public_key`, `jwks`, and `oauth` verification
+modes.
 
-### 1. Generate Your Key Pair
+## Install the embed
 
-A pair of encryption keys, known as a key-pair, are used to make sure that your application and Delphi's API communicate securely by providing a way to verify that messages sent between one another are coming from a legitimate source.
+Copy the snippet from the embed's **Configuration** tab. It looks like this:
 
-Our first step is to generate those encryption keys. You have two options for generating your RSA key pair:
+```html
+<script
+  src="https://www.delphi.ai/embed.js"
+  data-channel="YOUR_EMBED_ID"
+  data-mode="inline"
+  data-width="100%"
+  data-height="600"
+  async
+></script>
+```
 
-#### Option A: Using OpenSSL (Command Line)
+Use `data-mode="bubble"` for the floating chat bubble. Older snippets that load
+from `embed.delphi.ai` and configure `window.delphi = { ... }` keep working and
+expose the same `window.Delphi` API described below.
 
-Open your terminal and run the following commands:
+## Custom JWT
+
+Your server signs a short-lived RS256 JWT for the signed-in visitor. Your page
+hands it to the embed. Delphi verifies the signature against the public key you
+saved for that embed. The private key never leaves your server.
+
+```mermaid
+sequenceDiagram
+  participant Browser as Your page
+  participant Server as Your server
+  participant Embed as Delphi embed
+  Browser->>Server: Visitor is signed in to your site
+  Server-->>Browser: JWT signed with your private key
+  Browser->>Embed: window.Delphi.login(jwt)
+  Embed->>Embed: Verify signature with your public key
+  Embed-->>Browser: Visitor is signed in to the embed
+```
+
+### 1. Create a key pair
+
+**Option A: generate it in Delphi.** On the Identity tab, choose **Custom JWT**,
+turn on **Enable SSO**, and click **Generate Key Pair**. Delphi saves the public
+key, turns SSO on, and downloads `delphi-embed-private-key.pem`. The private key
+is generated in your browser and is never sent to Delphi, so store the download
+somewhere safe right away.
+
+**Option B: bring your own.**
 
 ```bash
-openssl genrsa -out private_key.pem 2048
-openssl rsa -in private_key.pem -pubout -out public_key.pem
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out private_key.pem
+openssl pkey -in private_key.pem -pubout -out public_key.pem
 ```
 
-This will generate a `private_key.pem` and a `public_key.pem` file in your current directory.
+Paste the contents of `public_key.pem` into **Public Key (PEM SPKI)**, including
+the `BEGIN PUBLIC KEY` and `END PUBLIC KEY` lines, then click **Save
+Configuration**.
 
-#### Option B: Using Delphi's Built-in Key Pair Generator
+### 2. Sign a token on your server
 
-1. Navigate to the SSO settings in your Delphi dashboard.
-2. Click on the "Generate Key Pair" button.
-3. Follow the on-screen instructions to generate and download your key pair.
+Only sign tokens for visitors you've already authenticated. The token must use
+RS256.
 
-![SSO Settings](doc/sso-settings.png)
-![Key Pair Generator Modal](doc/key-pair-modal.png)
+| Claim   | Required    | Meaning                                                                                       |
+| ------- | ----------- | --------------------------------------------------------------------------------------------- |
+| `sub`   | Yes\*       | Stable, unique ID for the visitor in your system. The same `sub` is always the same visitor.  |
+| `email` | No          | The visitor's email. If `sub` is missing, Delphi uses the email as the visitor ID.            |
+| `name`  | No          | Display name shown in your inbox.                                                             |
+| `exp`   | Recommended | Expiry. Keep it short; the sample uses one hour.                                              |
+| `iss`   | No          | Checked only if you set **Issuer** on the Identity tab.                                       |
+| `aud`   | No          | Checked only if you set **Audience** on the Identity tab.                                     |
 
-### 2. Configure Your SSO Settings
+\*A token without `sub` is accepted only if it has `email`.
 
-1. In Delphi's Clone Studio, go to the settings page, and find Single Sign-on (SSO) in the menu bar.
-2. Paste your public key into the designated field and click Save.
-   ![public key field](doc/pubkey.png)
+If your tokens already use different claim names for the visitor ID or email,
+set **Subject Claim** and **Email Claim** on the Identity tab instead of
+changing your tokens. Emails with a `+` alias are rejected.
 
-### 3. Implement SSO in Your Application
+With [`jose`](https://github.com/panva/jose) in Node.js:
 
-To implement SSO in your application, you'll need to:
-![General Information Flow Diagram](doc/flow.png)
+```ts
+import { importPKCS8, SignJWT } from "jose";
 
-1. Generate a JWT (JSON Web Token) signed with your private key.
-2. Send the JWT to the Delphi embed using the following JavaScript code:
+const privateKey = await importPKCS8(process.env.DELPHI_PRIVATE_SSO_KEY!, "RS256");
 
-Important Note: The only supported SSO field in the JWT payload is email. Any other fields in the JWT will be ignored, except for the standard expiry field. The only
-supported algorithim is RS256.
-
-To authenticate the Delphi embedding in your app, you can run the following, providing the JWT you generated earlier:
-
-```javascript
-const iframe = document.getElementById('delphi-frame');
-const targetOrigin = 'https://embed.delphi.ai'; // Use the embed origin, not the API origin
-
-iframe.contentWindow.postMessage(
-  {
-    type: 'sso_login',
-    token: 'your_generated_jwt_here'
-  },
-  targetOrigin
-);
+const token = await new SignJWT({ email: user.email, name: user.name })
+  .setProtectedHeader({ alg: "RS256" })
+  .setSubject(user.id)
+  .setIssuedAt()
+  .setExpirationTime("1h")
+  .sign(privateKey);
 ```
 
-A sample SSO application is available in `sample-sso-app`. This demo showcases a basic implementation of the Delphi SSO flow and can serve as a reference for your own implementation.
+### 3. Hand the token to the embed
 
-### 4. Test Your SSO Implementation
+**With the `embed.js` snippet**, call the script's API:
 
-Use Delphi's built-in JWT testing module to verify your token generation:
+```js
+window.Delphi.login(token); // sign the visitor in
+window.Delphi.logout(); // back to an anonymous visitor
+```
 
-1. In Delphi's Clone Studio, go to the settings page, and find Single Sign-on (SSO) in the menu bar.
-2. Navigate to the JWT testing section.
-3. Paste a sample JWT generated by your system.
-4. Click "Test JWT" to verify its validity and contents.
+The embed posts `{ type: "delphi:ready" }` to your page once it can accept a
+sign-in. To sign visitors in as the page loads, wait for that message:
 
-## Best Practices
+```js
+window.addEventListener("message", (event) => {
+  if (event.origin !== "https://www.delphi.ai") return;
+  if (event.data?.type === "delphi:ready") window.Delphi.login(token);
+});
+```
 
-1.  **Protect Your Private Key:** Store your private key in a secure location, such as a secret management system. **Never expose it in client-side code** or public repositories. The security of your users depends upon it, and Delphi reserves the right to revoke your SSO approval should these keys be mishandled.
+`https://www.delphi.ai` is the origin of the `src` in your snippet. `delphi:ready` can fire again, for example when the visitor returns to the tab.
+Calling `login` again with a token for the same visitor is safe.
 
-2.  **Token Expiration:** Set appropriate expiration times for your JWTs to limit the window of opportunity for potential replay attacks. The sample app sets a JWT expiry of 1 hour. The longer the expiration date, the less secure it is.
+**With a plain `<iframe>`** (no `embed.js`), post the token into the frame:
 
-3.  **Robust Iframe Initialization:** Many implementations face race conditions when initializing the Delphi embed and handling SSO. Here's what to watch out for:
+```js
+const frame = document.getElementById("delphi-frame");
+const delphiOrigin = "https://www.delphi.ai";
 
-    **Common Pitfalls**
-    A typical implementation often looks something like this:
+window.addEventListener("message", (event) => {
+  if (event.source !== frame.contentWindow || event.origin !== delphiOrigin) return;
+  if (event.data?.type === "delphi:ready") {
+    frame.contentWindow.postMessage({ type: "sso_login", token }, delphiOrigin);
+  }
+});
 
-    ```javascript
-    // ❌ Problematic Implementation
-    function initializeDelphiEmbed() {
-      const iframe = document.getElementById('delphi-frame');
+// To sign out:
+frame.contentWindow.postMessage({ type: "sso_logout" }, delphiOrigin);
+```
 
-      // This might fail if the scripts inside the iframe haven't loaded yet
-      iframe.contentWindow.postMessage(
-        {
-          type: 'sso_login',
-          token: 'your_jwt_token'
-        },
-        '*' // Never use wildcard in production
-      );
-    }
+The embed only accepts these messages from the page that embeds it. Always pass
+the Delphi origin as the `targetOrigin`, never `"*"`.
 
-    // This might run too early
-    window.onload = initializeDelphiEmbed;
-    ```
+### 4. Test your token
 
-    This approach can fail because:
+On the Identity tab, paste a token into **Test JWT** and click **Test JWT**. It
+checks the signature against your saved public key and shows the subject, email,
+and expiry it read. The check runs in your browser.
 
-    - The iframe might not be fully loaded when the message is sent
-    - The Delphi application inside the iframe might not be ready to receive messages
-    - There's no retry mechanism if the initialization fails
+### Expired tokens
 
-    **Understanding Delphi's Nested Iframe Structure**
+An expired token fails with `Invalid SSO token: token has expired.` Mint a fresh
+token on each page load rather than caching one. Sending an expired token
+doesn't sign out a visitor who is already signed in.
 
-    Delphi's embed loader creates a nested iframe structure:
+## Mighty Networks
 
-    ```
-    Your Page
-    └── Outer Wrapper Iframe (your 'delphi-frame')
-        └── Inner App Iframe (contains the actual Delphi app)
-    ```
+Mighty Networks members who are signed in to your space are recognized
+automatically. Mighty Networks posts a signed token into the embed, and Delphi
+verifies it against Mighty Networks' published keys. There's nothing to install
+beyond the embed snippet.
 
-    - The SSO listener lives in the **inner iframe** (at `https://embed.delphi.ai`), not the outer wrapper. If you send the SSO message to the wrong iframe or wrong origin, the browser will silently drop it, causing authentication to fail.
+Delphi sets this mode up for your embed; contact
+[support@delphi.ai](mailto:support@delphi.ai). Once it's set up, use **Enable
+SSO** on the Identity tab to turn it on or off.
 
-    **Recommended Implementation**
-    Use a robust sender that handles the nested iframe structure correctly:
+## Substack
 
-    ```javascript
-    class DelphiSSOSender {
-      constructor(iframeId, token, options = {}) {
-        this.iframeId = iframeId;
-        this.token = token;
-        this.maxRetries = options.maxRetries || 5;
-        this.retryDelay = options.retryDelay || 500;
-        this.loadDelay = options.loadDelay || 100;
-        this.iframe = null;
-        this.attempts = 0;
-      }
+Paid subscribers sign in with Substack from inside the embed. There's no code
+on your page: the embed opens a Substack sign-in popup, and Delphi signs the
+visitor in when it closes.
 
-      async findTargetIframe() {
-        return new Promise((resolve, reject) => {
-          let tries = 0;
-          const maxTries = 20;
+1. In your Substack OAuth app, register this redirect URI exactly:
 
-          const check = () => {
-            const container = document.getElementById(this.iframeId);
-            const frames = container?.querySelectorAll('iframe') || [];
+   ```
+   https://delphi.ai/api/embed/oauth/substack/callback
+   ```
 
-            const embedFrame = Array.from(frames).find((f) => f.src && f.src.includes('embed.delphi.ai')) || frames[frames.length - 1];
+2. On the Identity tab, choose **Substack** under **How visitors sign in**.
+3. Enter your **Publication host** (for example `newsletter.substack.com` or your
+   custom domain) and your **OAuth client ID**, then click **Save
+   Configuration**.
 
-            if (embedFrame) return resolve(embedFrame);
+Paid subscribers get subscriber access. Anyone else is sent to your
+publication's subscribe page.
 
-            if (++tries >= maxTries) {
-              return reject(new Error(`Embed iframe not found in #${this.iframeId}`));
-            }
-            setTimeout(check, 100);
-          };
-          check();
-        });
-      }
+## Security
 
-      sendToken() {
-        if (!this.iframe) return;
+- Keep the private key on your server, in a secret manager. Never ship it to the
+  browser or commit it. If it leaks, generate a new key pair; tokens signed with
+  the old key stop working once you save the new public key.
+- Keep `exp` short to limit replay.
+- Use a `sub` that never changes and is never reused for a different person.
 
-        const targetOrigin = this.attempts < 2 ? '*' : 'https://embed.delphi.ai';
+## Sample app
 
-        this.iframe.contentWindow?.postMessage({ type: 'sso_login', token: this.token }, targetOrigin);
-
-        console.log(`[DelphiSSO] Token sent (attempt ${this.attempts + 1}) to:`, targetOrigin);
-      }
-
-      async initialize() {
-        this.iframe = await this.findTargetIframe();
-
-        this.iframe.addEventListener('load', () => {
-          setTimeout(() => this.sendToken(), this.loadDelay);
-        });
-
-        const doc = this.iframe.contentDocument;
-        if (doc?.readyState === 'complete') {
-          setTimeout(() => this.sendToken(), this.loadDelay);
-        }
-
-        const interval = setInterval(() => {
-          this.sendToken();
-          if (++this.attempts >= this.maxRetries) clearInterval(interval);
-        }, this.retryDelay);
-      }
-    }
-    ```
-
-    ```javascript
-    const delphiSSO = new DelphiSSOSender('delphi-frame', 'your_jwt_token');
-    delphiSSO.initialize().catch((e) => console.error('[DelphiSSO] Init failed:', e));
-    ```
-
-    Notes:
-
-    - **Nested Iframe Detection:** The SSO message must reach the inner embed iframe at `https://embed.delphi.ai`, not just any iframe on your page. Always derive the `targetOrigin` from the iframe's `src` attribute, not from the API host.
-    - **Cross-Origin Limitations:** Do not read `iframe.contentWindow.location` or `iframe.contentWindow.document` on cross‑origin iframes; browsers block this by design due to Same-Origin Policy.
-    - **Specific Origins Only:** Always use a specific `targetOrigin` (e.g., `https://embed.delphi.ai`), never a wildcard (`*`) in production.
-
-4.  **Same-Origin Policy Compliance:** Never attempt to read `iframe.contentWindow.location` or `iframe.contentWindow.document` from a cross-origin Delphi embed, as browsers will block these operations for security reasons. Use `postMessage` with a specific `targetOrigin` for cross-origin communication.
-
-By following these guidelines and best practices, you'll ensure a secure and efficient SSO implementation.
+[`sample-sso-app`](sample-sso-app) is a Next.js app that installs the embed with
+`embed.js`, signs a Custom JWT in a server action, and signs a demo visitor in
+and out with `window.Delphi.login` and `window.Delphi.logout`. See its
+[README](sample-sso-app/README.md) to run it.
