@@ -1,38 +1,28 @@
-"use server"
+"use server";
 
-import { importPKCS8, SignJWT } from 'jose';
+import { importPKCS8, SignJWT } from "jose";
 
-// SECURITY NOTE:
-// This example generates a token for a hardcoded user (john@doe.com).
-// In a production environment, you MUST:
-// 1. Implement proper user authentication before generating the token.
-// 2. Use the authenticated user's actual email address in the token payload.
+// SECURITY: This demo signs a token for a hardcoded visitor. In your app, sign
+// tokens only for the visitor your own auth has already verified, and use their
+// real, stable user ID as `sub`.
+const demoVisitor = {
+  id: "demo-visitor-1",
+  email: "jane@example.com",
+  name: "Jane Doe",
+};
 
-export async function loginJohnDoe() {
-  // SECURITY: Ensure the private key is stored securely and not exposed
-  const privateKey = process.env.DELPHI_PRIVATE_SSO_KEY;
-
-  if (!privateKey) {
-    throw new Error('Private key is not set in environment variables');
+export async function signDemoVisitorToken(): Promise<string> {
+  const pem = process.env.DELPHI_PRIVATE_SSO_KEY;
+  if (!pem) {
+    throw new Error("DELPHI_PRIVATE_SSO_KEY is not set");
   }
 
-  const alg = 'RS256';
-  const pkcs8Key = await importPKCS8(privateKey, alg);
+  const privateKey = await importPKCS8(pem, "RS256");
 
-  // SECURITY: In a real-world scenario, you must authenticate the user here
-  // before generating the token. This example uses a hardcoded email for demonstration purposes only.
-  
-  // IMPORTANT: Your authentication logic should go here.
-  // Verify the user's credentials and retrieve their email address securely.
-  // const userEmail = await authenticateUser(username, password);
-
-  const userEmail = "john@doe.com"
-  
-  const token = await new SignJWT({ email: userEmail })
-    .setProtectedHeader({ alg })
+  return new SignJWT({ email: demoVisitor.email, name: demoVisitor.name })
+    .setProtectedHeader({ alg: "RS256" })
+    .setSubject(demoVisitor.id)
     .setIssuedAt()
-    .setExpirationTime('1h')
-    .sign(pkcs8Key);
-
-  return token;
+    .setExpirationTime("1h")
+    .sign(privateKey);
 }
