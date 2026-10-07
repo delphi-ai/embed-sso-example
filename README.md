@@ -67,8 +67,8 @@ somewhere safe right away.
 **Option B: bring your own.**
 
 ```bash
-openssl genrsa -out private_key.pem 2048
-openssl rsa -in private_key.pem -pubout -out public_key.pem
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out private_key.pem
+openssl pkey -in private_key.pem -pubout -out public_key.pem
 ```
 
 Paste the contents of `public_key.pem` into **Public Key (PEM SPKI)**, including
